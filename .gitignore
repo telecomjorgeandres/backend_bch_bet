@@ -1,0 +1,28 @@
+# Byte-code files
+*.pyc
+__pycache__/
+
+# Virtual environment
+/venv/
+/env/
+.Python/
+
+# Database
+db.sqlite3
+*.sqlite3
+
+# Media and static files (often generated or uploaded)
+/media/
+/static_root/
+
+# Development and OS files
+.DS_Store
+.idea/      # For PyCharm/IntelliJ IDE
+.vscode/    # For VS Code IDE
+*.log
+*.pot
+*.mo
+
+# Environment variables (sensitive information)
+.env
+.flaskenv
