@@ -10,11 +10,14 @@ class ScoreOutcomeInline(admin.StackedInline): # Using StackedInline for a more 
 
 @admin.register(Match)
 class MatchAdmin(admin.ModelAdmin):
-    list_display = ('team1', 'team2', 'match_date', 'winning_outcome_display', 'match_id')
+    # Add team1_logo_url and team2_logo_url to list_display and fields
+    list_display = ('team1', 'team1_logo_url', 'team2', 'team2_logo_url', 'match_date', 'winning_outcome_display', 'match_id')
     list_filter = ('match_date',)
     search_fields = ('team1', 'team2', 'match_id')
     # Add inlines to allow editing ScoreOutcomes directly from the Match admin page
     inlines = [ScoreOutcomeInline]
+    # Make logo URLs editable in the admin form
+    fields = ('team1', 'team1_logo_url', 'team2', 'team2_logo_url', 'match_date', 'winning_outcome')
 
     def winning_outcome_display(self, obj):
         return obj.winning_outcome.score if obj.winning_outcome else "N/A"

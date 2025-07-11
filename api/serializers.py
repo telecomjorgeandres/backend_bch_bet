@@ -1,4 +1,3 @@
-# bch_betting_backend/api/serializers.py
 from rest_framework import serializers
 from .models import Match, ScoreOutcome, BCHRate, RealBetTransaction
 
@@ -17,9 +16,8 @@ class MatchSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Match
-        # Re-added 'winning_outcome' for future payout functionality.
-        # If you do not plan to implement payout logic, you can remove it.
-        fields = ['match_id', 'team1', 'team2', 'match_date', 'betting_outcomes', 'winning_outcome']
+        # Add team1_logo_url and team2_logo_url to the fields
+        fields = ['match_id', 'team1', 'team2', 'match_date', 'betting_outcomes', 'winning_outcome', 'team1_logo_url', 'team2_logo_url']
 
     def get_betting_outcomes(self, obj):
         # Returns a dictionary where keys are outcome_id and values are serialized outcomes

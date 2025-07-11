@@ -1,5 +1,9 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv # Ensure this is imported
+
+# Load environment variables from .env file
+load_dotenv() # This line ensures .env is loaded for all management commands
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -18,12 +22,13 @@ INSTALLED_APPS = [
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
-    'django.contrib.messages',
+    'django.contrib.messages', # Essential for Django's messaging framework
     'django.contrib.staticfiles', # Essential for serving static files like DRF's CSS
     'rest_framework',             # Django REST Framework
     'corsheaders',                # Django CORS Headers
     'api',                        # Your API app (assuming this is where your views/models are)
-    'background_task'             # Background task processing
+    'background_task',            # Background task processing
+    'channels',                   # Django Channels
 ]
 
 MIDDLEWARE = [
@@ -51,11 +56,24 @@ TEMPLATES = [
                 'django.template.context_processors.debug',
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+                'django.contrib.messages.context_processors.messages', # Corrected path for messages context processor
             ],
         },
     },
 ]
+
+# ASGI application for Django Channels
+ASGI_APPLICATION = 'betting_project.asgi.application' # <--- New setting
+
+# Channel Layer configuration (using Redis)
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [os.environ.get('REDIS_URL', 'redis://localhost:6379/0')], # <--- New setting
+        },
+    },
+}
 
 WSGI_APPLICATION = 'betting_project.wsgi.application'
 
@@ -91,12 +109,15 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-# ADDED: This tells Django to look for static files in a 'static' folder
+# This tells Django to look for static files in a 'static' folder
 # at the root of your project (next to manage.py and betting_project folder)
 STATICFILES_DIRS = [
     BASE_DIR / 'static',
 ]
 
+# The directory where `collectstatic` will gather all static files for deployment.
+# It's good practice to define this even in development.
+STATIC_ROOT = BASE_DIR / 'staticfiles' # <--- NEW LINE
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -105,11 +126,11 @@ CORS_ALLOW_ALL_ORIGINS = True # For development, allows all origins.
 # In production, change to CORS_ALLOWED_ORIGINS = ['http://localhost:3000', 'https://your-react-app-domain.com']
 # Or use CORS_ALLOW_ALL_ORIGINS = False and define CORS_ALLOWED_ORIGIN_REGEXES
 
-# BCH Wallet Configuration (for Testnet)
+# BCH Wallet Configuration (for Testnet) - No longer directly used in this generic setup
 # WARNING: NEVER hardcode private keys in production! Use environment variables.
 # This is a TESTNET private key. Get one from a testnet faucet.
 # Example: "cNfsAACYiXk1c1h4qXj2P2pM5rGq9j8h7g6f5e4d3c2b1a0" (replace with your actual testnet WIF)
-BCH_WALLET_WIF = os.environ.get('BCH_WALLET_WIF', 'L5Y6pTRnLYn7bKec11Xu7MgqT5XmjQMFDvgn6WmCHHcEhZaoQ2Kq')
+# BCH_WALLET_WIF = os.environ.get('BCH_WALLET_WIF', 'L5Y6pTRnLYn7bKec11Xu7MgqT5XmjQMFDvgn6WmCHHcEhZaoQ2Kq')
 
 
 # LOGGING configuration for detailed console output
@@ -147,6 +168,11 @@ LOGGING = {
         'api': { # Logger for your api app
             'handlers': ['console'],
             'level': 'DEBUG', # Set to DEBUG to see your custom logger messages
+            'propagate': False,
+        },
+        'channels': { # <--- Add Channels logger
+            'handlers': ['console'],
+            'level': 'INFO', # Can set to DEBUG for more verbosity
             'propagate': False,
         },
         # Add other loggers if needed

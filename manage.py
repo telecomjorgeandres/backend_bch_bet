@@ -2,10 +2,13 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
-
+from dotenv import load_dotenv # Import load_dotenv
 
 def main():
     """Run administrative tasks."""
+    # Load environment variables from .env file
+    load_dotenv() # This line ensures .env is loaded for all management commands
+
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'betting_project.settings')
     try:
         from django.core.management import execute_from_command_line
@@ -20,3 +23,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

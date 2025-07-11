@@ -25,6 +25,10 @@ class Match(models.Model):
     match_date = models.DateTimeField() # Stores both date and time
     # New field: Link to the winning outcome once the match is resolved (for simulated payouts)
     winning_outcome = models.ForeignKey('ScoreOutcome', on_delete=models.SET_NULL, null=True, blank=True, related_name='won_matches')
+    
+    # New fields for team logo URLs
+    team1_logo_url = models.URLField(max_length=500, blank=True, null=True)
+    team2_logo_url = models.URLField(max_length=500, blank=True, null=True)
 
     def __str__(self):
         # Human-readable representation for the admin and debugging

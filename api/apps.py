@@ -1,9 +1,11 @@
+# bch_betting_backend/api/apps.py
 from django.apps import AppConfig
 import logging
-from django.db.models.signals import post_migrate # Import post_migrate signal
+# Removed post_migrate import as we are moving scheduling to ready()
 from datetime import timedelta # Import for setting run_at time
 from django.utils import timezone # Import timezone for timezone-aware datetimes
 import json # Import json module to create empty JSON string
+from django.db.utils import OperationalError # Import for database specific errors
 
 logger = logging.getLogger(__name__)
 
@@ -12,37 +14,28 @@ class ApiConfig(AppConfig):
     name = 'api'
 
     def ready(self):
-        # Connect the schedule_background_tasks function to the post_migrate signal
-        # This ensures tasks are scheduled only after migrations have run and apps are ready.
-        post_migrate.connect(self.schedule_background_tasks, sender=self)
-
-    def schedule_background_tasks(self, sender, **kwargs):
-        # This function will be called by the post_migrate signal.
-        # It ensures that the database is ready for queries.
-        
-        # Import Task model.
+        logger.debug(f"ApiConfig ready() method called for app: {self.name}.")
+        # Import Task model and tasks inside ready() to ensure apps are fully loaded
         from background_task.models import Task
-        
-        # Import both tasks
         from .tasks import update_bch_price_task, monitor_bch_addresses_task
 
-        logger.info("Attempting to schedule background tasks via post_migrate signal...")
+        logger.info("Attempting to schedule background tasks directly in ready()...")
 
         try:
             # Define task names as strings (full path to the task function)
             task_name_price = 'api.tasks.update_bch_price_task'
             task_name_monitor = 'api.tasks.monitor_bch_addresses_task'
 
-            # Calculate initial run time (e.g., 10 seconds from now)
-            # Use timezone.now() to create a timezone-aware datetime
-            initial_run_at = timezone.now() + timedelta(seconds=10)
+            # Calculate initial run time (e.g., 1 second from now) for quicker startup
+            initial_run_at = timezone.now() + timedelta(seconds=1) # Changed from 10 to 1 second
 
             # Define empty JSON parameters for tasks that don't take arguments
+            # This should be a JSON-encoded list containing an empty list for args and an empty dict for kwargs
             empty_json_params = json.dumps([[], {}]) 
 
             # Check for update_bch_price_task
             if not Task.objects.filter(task_name=task_name_price).exists():
-                # Directly create a Task object, explicitly setting task_params
+                logger.debug(f"Task {task_name_price} not found in DB. Attempting to create.")
                 Task.objects.create(
                     task_name=task_name_price,
                     run_at=initial_run_at,
@@ -56,7 +49,7 @@ class ApiConfig(AppConfig):
             
             # Check for monitor_bch_addresses_task
             if not Task.objects.filter(task_name=task_name_monitor).exists():
-                # Directly create a Task object, explicitly setting task_params
+                logger.debug(f"Task {task_name_monitor} not found in DB. Attempting to create.")
                 Task.objects.create(
                     task_name=task_name_monitor,
                     run_at=initial_run_at,
@@ -67,7 +60,10 @@ class ApiConfig(AppConfig):
                 logger.info(f"Scheduled {task_name_monitor}.")
             else:
                 logger.info(f"{task_name_monitor} already scheduled.")
-                
+                    
+        except OperationalError as oe:
+            # This specific error indicates database connection issues or tables not ready
+            logger.error(f"Database OperationalError during task scheduling: {oe}. This might happen if DB is not fully ready.", exc_info=True)
         except Exception as e:
-            logger.error(f"Error scheduling background tasks in post_migrate: {e}")
+            logger.error(f"An unexpected error occurred during task scheduling in ready(): {e}", exc_info=True)
 
