@@ -105,19 +105,54 @@ CORS_ALLOW_ALL_ORIGINS = True # For development, allows all origins.
 # In production, change to CORS_ALLOWED_ORIGINS = ['http://localhost:3000', 'https://your-react-app-domain.com']
 # Or use CORS_ALLOW_ALL_ORIGINS = False and define CORS_ALLOWED_ORIGIN_REGEXES
 
-# REST Framework settings (REQUIRED for browsable API)
-REST_FRAMEWORK = {
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
-        'rest_framework.renderers.BrowsableAPIRenderer', # <-- CRUCIAL: Added this line
-    ],
-    'DEFAULT_PARSER_CLASSES': [
-        'rest_framework.parsers.JSONParser',
-    ]
-}
-
 # BCH Wallet Configuration (for Testnet)
 # WARNING: NEVER hardcode private keys in production! Use environment variables.
 # This is a TESTNET private key. Get one from a testnet faucet.
 # Example: "cNfsAACYiXk1c1h4qXj2P2pM5rGq9j8h7g6f5e4d3c2b1a0" (replace with your actual testnet WIF)
-BCH_WALLET_WIF = os.environ.get('BCH_WALLET_WIF', 'KyLJg5HH7BWWFz4GoNyoXVVGKBzMNhP2qeWoxmeHyvhY8yMQmg3F')
+BCH_WALLET_WIF = os.environ.get('BCH_WALLET_WIF', 'L5Y6pTRnLYn7bKec11Xu7MgqT5XmjQMFDvgn6WmCHHcEhZaoQ2Kq')
+
+
+# LOGGING configuration for detailed console output
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'DEBUG', # Set to DEBUG to see all messages
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple', # Use simple formatter for cleaner console output
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO', # Django's general logs
+            'propagate': False,
+        },
+        'background_task': { # Logger for django-background-tasks
+            'handlers': ['console'],
+            'level': 'DEBUG', # Set to DEBUG to see detailed task execution logs and errors
+            'propagate': False,
+        },
+        'api': { # Logger for your api app
+            'handlers': ['console'],
+            'level': 'DEBUG', # Set to DEBUG to see your custom logger messages
+            'propagate': False,
+        },
+        # Add other loggers if needed
+    },
+    'root': { # Catch-all logger
+        'handlers': ['console'],
+        'level': 'WARNING', # Default level for anything not explicitly configured
+    }
+}

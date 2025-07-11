@@ -1,10 +1,9 @@
 from django.contrib import admin
-from django.urls import path, include
-from django.views.generic.base import RedirectView
+from django.urls import path, include # Ensure 'include' is imported
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    # Ensure 'api' app URLs are correctly included with a namespace
-    path('api/', include(('api.urls', 'api'), namespace='api')),
-    path('', RedirectView.as_view(url='/api/', permanent=False)),
+    # This line tells Django to look for URLs starting with 'api/'
+    # inside the 'api.urls' module (i.e., bch_betting_backend/api/urls.py)
+    path('api/', include('api.urls')),
 ]

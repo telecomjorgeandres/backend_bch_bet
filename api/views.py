@@ -1,122 +1,126 @@
-from django.http import JsonResponse # Keep for now if other parts of your app use it, though DRF's Response is preferred for API views
-from rest_framework.decorators import api_view
-from rest_framework.response import Response # Import Response from DRF for API views
-from rest_framework.reverse import reverse
-from rest_framework import status
-import json
-import uuid
-import random
+from rest_framework import viewsets, status
+from rest_framework.response import Response
+from rest_framework.decorators import action # For custom actions on ViewSets
+from .models import Match, ScoreOutcome, BCHRate, RealBetTransaction
+from .serializers import MatchSerializer, ScoreOutcomeSerializer, BCHRateSerializer, RealBetTransactionSerializer
+import os
 from decimal import Decimal
-from datetime import date, datetime, timezone # Import date, datetime, and timezone for filtering
+import uuid
+from django.utils import timezone
+import logging
 
-# Ensure these imports are correct
-from .bch_betting import BCHBettingSystem
-from .models import BCHRate, Match # <-- IMPORTANT: Import the Match model
-from .serializers import MatchSerializer # <-- IMPORTANT: Import your MatchSerializer
+logger = logging.getLogger(__name__)
 
-# Initialize the betting system globally
-betting_system = BCHBettingSystem()
-
-# --- API Root View ---
-@api_view(['GET'])
-def api_root(request, format=None):
+class MatchViewSet(viewsets.ModelViewSet):
     """
-    The root of the API, providing links to available endpoints.
+    A ViewSet for viewing and editing Match instances.
     """
-    return Response({ # Changed to Response
-        'bch_rate': reverse('api:bch_rate', request=request, format=format),
-        'simulate_bet': reverse('api:simulate_bet', request=request, format=format),
-        'matches': reverse('api:match-list', request=request, format=format),
-    })
+    queryset = Match.objects.all().prefetch_related('outcomes')
+    serializer_class = MatchSerializer
+    # You might want to add permission classes later, e.g., permissions.IsAdminUser for write operations
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"matches": serializer.data}) # Return as {"matches": [...]}
 
-# --- MODIFIED View for Matches (fetches from database) ---
-@api_view(['GET'])
-def get_matches(request):
+class ScoreOutcomeViewSet(viewsets.ModelViewSet):
     """
-    API endpoint to get a list of all current matches with their details from the database.
-    Filters for matches on July 12, 2025.
+    A ViewSet for viewing and editing ScoreOutcome instances.
     """
-    # Define the target date.
-    # Note: If your match_date in the database is timezone-aware and stores UTC,
-    # and your server's timezone (TIME_ZONE in settings.py) is different,
-    # direct comparison with `date(2025, 7, 12)` might behave differently
-    # depending on the database backend. `__date` lookup is generally robust.
-    target_date = date(2025, 7, 12)
+    queryset = ScoreOutcome.objects.all()
+    serializer_class = ScoreOutcomeSerializer
+    # You might want to add permission classes later
 
-    # Fetch matches from the database that are on the target date
-    # .prefetch_related('outcomes') is good practice to avoid N+1 queries when
-    # serializing related ScoreOutcome objects.
-    matches = Match.objects.filter(match_date__date=target_date).prefetch_related('outcomes').order_by('match_date')
-
-    # Serialize the queryset using your MatchSerializer
-    # `many=True` is crucial when serializing a list (queryset) of objects
-    serializer = MatchSerializer(matches, many=True)
-    
-    # Return the serialized data using DRF's Response
-    return Response({'matches': serializer.data})
-
-
-# --- Existing get_bch_rate function (updated to use Response) ---
-@api_view(['GET'])
-def get_bch_rate(request):
+class BCHRateViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    API endpoint to get the current BCH to USD exchange rate.
-    This will read the latest rate from the database.
+    A ReadOnly ViewSet for viewing the current BCH to USD exchange rate.
     """
-    # Assuming betting_system.get_bch_usd_rate() is configured to read from BCHRate model
-    rate = betting_system.get_bch_usd_rate()
-    if rate is not None:
-        return Response({'bch_usd_rate': str(rate)}) # Changed to Response
-    else:
-        return Response({'error': 'BCH rate not available'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR) # Changed to Response
+    queryset = BCHRate.objects.all().order_by('-timestamp')
+    serializer_class = BCHRateSerializer
 
-# --- Existing simulate_bet function (updated to use Response) ---
-@api_view(['POST'])
-def simulate_bet(request):
+    def list(self, request, *args, **kwargs):
+        latest_rate = self.get_queryset().first()
+        if latest_rate:
+            serializer = self.get_serializer(latest_rate)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
+            return Response({"error": "BCH rate not available. Please wait for the background task to fetch it."},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+class RealBetTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    Simulates a deposit and returns the required BCH amount for a given USD value.
-    This will use the CURRENT rate from the database.
+    A ReadOnly ViewSet for viewing RealBetTransaction instances.
     """
-    try:
+    queryset = RealBetTransaction.objects.all().order_by('-timestamp')
+    serializer_class = RealBetTransactionSerializer
+    # You might want to add permission classes later to restrict access
+
+class SimulatePredictionView(viewsets.ViewSet):
+    """
+    A ViewSet for simulating prediction entries.
+    This is a custom ViewSet because it doesn't directly map to a model's CRUD operations.
+    """
+    @action(detail=False, methods=['post'])
+    def simulate_prediction(self, request):
         match_id = request.data.get('match_id')
         score_outcome_id = request.data.get('score_outcome_id')
 
-        if not all([match_id, score_outcome_id]):
-            return Response({"error": "Missing match_id or score_outcome_id"}, status=status.HTTP_400_BAD_REQUEST) # Changed to Response
+        if not match_id or not score_outcome_id:
+            return Response({"error": "Both match_id and score_outcome_id are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # The update_bch_usd_rate and simulate_deposit calls within betting_system
-        # need to be updated to interact with the database models directly
-        # if they aren't already.
+        try:
+            match = Match.objects.get(match_id=match_id)
+            score_outcome = ScoreOutcome.objects.get(outcome_id=score_outcome_id, match=match)
+        except Match.DoesNotExist:
+            return Response({"error": "Match not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ScoreOutcome.DoesNotExist:
+            return Response({"error": "Score outcome not found for the given match."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Simulate the transaction details
+        simulated_tx_hash = str(uuid.uuid4()).replace('-', '') # Generate a unique hash
         
-        # For BCH rate, ensure betting_system.get_bch_usd_rate() reads from BCHRate model.
-        # For simulate_deposit, ensure it updates the bet_count in the ScoreOutcome model.
+        # Get the current BCH/USD rate from environment variable (set by background task)
+        current_bch_usd_rate_str = os.getenv('LAST_FETCHED_BCH_USD_RATE', '0.00')
+        current_bch_usd_rate = Decimal(current_bch_usd_rate_str)
         
-        betting_system.update_bch_usd_rate() # Trigger an update before calculation
-        current_bch_rate = betting_system.get_bch_usd_rate()
+        ticket_value_usd = Decimal('1.00') # Fixed value for one prediction entry
 
-        if current_bch_rate is None or current_bch_rate <= 0:
-            return Response({'error': 'BCH exchange rate not available or invalid'}, status=status.HTTP_503_SERVICE_UNAVAILABLE) # Changed to Response
+        simulated_amount_satoshi = 0
+        num_tickets = 0
 
-        random_num_tickets = Decimal(str(random.randint(1, 5)))
-        # Assuming betting_system.ticket_value_usd is defined correctly (e.g., as a Decimal)
-        required_bch_for_ticket = betting_system.ticket_value_usd / current_bch_rate
-        simulated_bch_amount = (required_bch_for_ticket * random_num_tickets).quantize(Decimal('0.00000001'))
-
-        success = betting_system.simulate_deposit(
-            match_id, score_outcome_id, "bchtest:simulateduser" + str(uuid.uuid4().hex[:10]), simulated_bch_amount
-        )
-
-        if success:
-            return Response({ # Changed to Response
-                "message": f"Simulated bet successful for {simulated_bch_amount:.8f} BCH ({random_num_tickets} ticket(s))",
-                "simulated_bch_amount": str(simulated_bch_amount),
-                "num_tickets_placed": str(random_num_tickets),
-                "match_id": match_id,
-                "score_outcome_id": score_outcome_id
-            }, status=status.HTTP_200_OK)
+        if current_bch_usd_rate > 0:
+            # Calculate the BCH amount equivalent to 1 USD
+            required_bch_per_ticket = ticket_value_usd / current_bch_usd_rate
+            # Simulate sending exactly one ticket's worth of BCH in satoshis
+            simulated_amount_satoshi = int(required_bch_per_ticket * Decimal(100_000_000))
+            num_tickets = 1 # We are simulating one ticket per call for simplicity
         else:
-            return Response({"error": "Failed to simulate bet (check server logs for details)."}, status=status.HTTP_400_BAD_REQUEST) # Changed to Response
-    except Exception as e:
-        print(f"Error in simulate_bet view: {e}")
-        return Response({'error': f'An unexpected error occurred: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR) # Changed to Response
+            logger.warning("BCH/USD rate is zero or not available. Cannot simulate amount.")
+            return Response({"error": "BCH rate not available for simulation."},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Increment the bet_count for the chosen outcome
+        score_outcome.bet_count += num_tickets
+        score_outcome.save()
+
+        # Create a RealBetTransaction record for the simulated transaction
+        RealBetTransaction.objects.create(
+            transaction_hash=simulated_tx_hash,
+            bch_address=score_outcome.bch_address, # Use the outcome's address
+            amount_satoshi=simulated_amount_satoshi,
+            outcome=score_outcome,
+            timestamp=timezone.now()
+        )
+        logger.info(f"Simulated {num_tickets} prediction entry for outcome '{score_outcome.score}' (Match ID: {match_id}). TX: {simulated_tx_hash}")
+
+        return Response({
+            "message": "Prediction simulated successfully!",
+            "match_id": match_id,
+            "score_outcome_id": score_outcome_id,
+            "simulated_tx_hash": simulated_tx_hash,
+            "num_tickets": num_tickets,
+            "simulated_amount_satoshi": simulated_amount_satoshi
+        }, status=status.HTTP_200_OK)
+
