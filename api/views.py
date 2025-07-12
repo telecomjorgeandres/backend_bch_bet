@@ -1,65 +1,80 @@
+# bch_betting_backend/api/views.py
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.decorators import action # For custom actions on ViewSets
+from rest_framework.decorators import action
+from rest_framework.views import APIView # Import APIView
+from django.middleware.csrf import get_token # Import get_token
 from .models import Match, ScoreOutcome, BCHRate, RealBetTransaction
 from .serializers import MatchSerializer, ScoreOutcomeSerializer, BCHRateSerializer, RealBetTransactionSerializer
-import os
-from decimal import Decimal
 import uuid
-from django.utils import timezone
+import os
 import logging
+from decimal import Decimal
+from django.utils import timezone
+import requests
 
 logger = logging.getLogger(__name__)
 
-class MatchViewSet(viewsets.ModelViewSet):
+class MatchViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    A ViewSet for viewing and editing Match instances.
+    A simple ViewSet for viewing matches and their outcomes.
     """
-    queryset = Match.objects.all().prefetch_related('outcomes')
+    queryset = Match.objects.all().order_by('match_date')
     serializer_class = MatchSerializer
-    # You might want to add permission classes later, e.g., permissions.IsAdminUser for write operations
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({"matches": serializer.data}) # Return as {"matches": [...]}
+    def get_queryset(self):
+        # Prefetch related outcomes to avoid N+1 queries
+        return super().get_queryset().prefetch_related('outcomes')
 
-class ScoreOutcomeViewSet(viewsets.ModelViewSet):
+class ScoreOutcomeViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    A ViewSet for viewing and editing ScoreOutcome instances.
+    A simple ViewSet for viewing score outcomes.
     """
     queryset = ScoreOutcome.objects.all()
     serializer_class = ScoreOutcomeSerializer
-    # You might want to add permission classes later
 
-class BCHRateViewSet(viewsets.ReadOnlyModelViewSet):
+class BCHRateViewSet(viewsets.ViewSet):
     """
-    A ReadOnly ViewSet for viewing the current BCH to USD exchange rate.
+    A ViewSet for retrieving the latest BCH to USD exchange rate.
     """
-    queryset = BCHRate.objects.all().order_by('-timestamp')
-    serializer_class = BCHRateSerializer
-
-    def list(self, request, *args, **kwargs):
-        latest_rate = self.get_queryset().first()
-        if latest_rate:
-            serializer = self.get_serializer(latest_rate)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        else:
-            return Response({"error": "BCH rate not available. Please wait for the background task to fetch it."},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    def list(self, request):
+        try:
+            # Get the latest BCHRate from the database
+            latest_rate = BCHRate.objects.latest('timestamp')
+            serializer = BCHRateSerializer(latest_rate)
+            return Response(serializer.data)
+        except BCHRate.DoesNotExist:
+            logger.warning("No BCH rate found in the database. Attempting initial fetch...")
+            # If no rate is in DB, try to fetch it immediately (blocking)
+            # This is a fallback for the very first startup before the task runs
+            try:
+                response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin-cash&vs_currencies=usd")
+                response.raise_for_status()
+                data = response.json()
+                bch_usd_rate = data.get('bitcoin-cash', {}).get('usd')
+                if bch_usd_rate:
+                    # Save it to DB for future requests
+                    new_rate_obj = BCHRate.objects.create(rate=Decimal(str(bch_usd_rate)))
+                    logger.info(f"Initial BCH rate fetched from API: ${bch_usd_rate}")
+                    serializer = BCHRateSerializer(new_rate_obj)
+                    return Response(serializer.data)
+                else:
+                    logger.error("Could not retrieve BCH to USD rate from CoinGecko API during initial fetch.")
+                    return Response({"error": "BCH rate not available"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error fetching initial BCH price from CoinGecko: {e}")
+                return Response({"error": "Failed to fetch BCH rate from external API"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 class RealBetTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    A ReadOnly ViewSet for viewing RealBetTransaction instances.
+    A ViewSet for viewing recorded real bet transactions.
     """
     queryset = RealBetTransaction.objects.all().order_by('-timestamp')
     serializer_class = RealBetTransactionSerializer
-    # You might want to add permission classes later to restrict access
 
 class SimulatePredictionView(viewsets.ViewSet):
     """
-    A ViewSet for simulating prediction entries.
-    This is a custom ViewSet because it doesn't directly map to a model's CRUD operations.
+    API endpoint to simulate a prediction transaction for testing purposes.
     """
     @action(detail=False, methods=['post'])
     def simulate_prediction(self, request):
@@ -67,60 +82,58 @@ class SimulatePredictionView(viewsets.ViewSet):
         score_outcome_id = request.data.get('score_outcome_id')
 
         if not match_id or not score_outcome_id:
-            return Response({"error": "Both match_id and score_outcome_id are required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Match ID and Score Outcome ID are required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            match = Match.objects.get(match_id=match_id)
-            score_outcome = ScoreOutcome.objects.get(outcome_id=score_outcome_id, match=match)
-        except Match.DoesNotExist:
-            return Response({"error": "Match not found."}, status=status.HTTP_404_NOT_FOUND)
+            # Find the specific ScoreOutcome
+            outcome = ScoreOutcome.objects.get(match__match_id=match_id, outcome_id=score_outcome_id)
         except ScoreOutcome.DoesNotExist:
-            return Response({"error": "Score outcome not found for the given match."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Match or Score Outcome not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Simulate the transaction details
-        simulated_tx_hash = str(uuid.uuid4()).replace('-', '') # Generate a unique hash
-        
-        # Get the current BCH/USD rate from environment variable (set by background task)
+        # --- Simulate a transaction and update the outcome directly ---
+        # This simulation logic directly updates the database for demonstration.
+        # In a real setup, the `monitor_bch_addresses_task` would detect and process real transactions.
+
+        mock_tx_hash = f"simulated_tx_{uuid.uuid4().hex}"
+        mock_bch_address = outcome.bch_address # The address the "payment" is for
+        # Increased simulated amount to ensure it's enough for at least one ticket
+        mock_amount_satoshi = 500000 # Simulate 0.005 BCH (e.g., if 1 BCH = $200, this is $1)
+
         current_bch_usd_rate_str = os.getenv('LAST_FETCHED_BCH_USD_RATE', '0.00')
         current_bch_usd_rate = Decimal(current_bch_usd_rate_str)
+        ticket_value_usd = Decimal('1.00')
         
-        ticket_value_usd = Decimal('1.00') # Fixed value for one prediction entry
-
-        simulated_amount_satoshi = 0
         num_tickets = 0
-
         if current_bch_usd_rate > 0:
-            # Calculate the BCH amount equivalent to 1 USD
             required_bch_per_ticket = ticket_value_usd / current_bch_usd_rate
-            # Simulate sending exactly one ticket's worth of BCH in satoshis
-            simulated_amount_satoshi = int(required_bch_per_ticket * Decimal(100_000_000))
-            num_tickets = 1 # We are simulating one ticket per call for simplicity
+            if required_bch_per_ticket > 0:
+                num_tickets = int(Decimal(mock_amount_satoshi) / Decimal(100_000_000) / required_bch_per_ticket)
+            else:
+                logger.warning(f"Required BCH per ticket is zero for {outcome.bch_address}. Check BCH/USD rate.")
         else:
-            logger.warning("BCH/USD rate is zero or not available. Cannot simulate amount.")
-            return Response({"error": "BCH rate not available for simulation."},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            logger.warning(f"BCH/USD rate is zero or not available ({current_bch_usd_rate_str}). Cannot calculate tickets for {outcome.bch_address}.")
 
-        # Increment the bet_count for the chosen outcome
-        score_outcome.bet_count += num_tickets
-        score_outcome.save()
+        if num_tickets > 0:
+            outcome.bet_count += num_tickets
+            outcome.save()
 
-        # Create a RealBetTransaction record for the simulated transaction
-        RealBetTransaction.objects.create(
-            transaction_hash=simulated_tx_hash,
-            bch_address=score_outcome.bch_address, # Use the outcome's address
-            amount_satoshi=simulated_amount_satoshi,
-            outcome=score_outcome,
-            timestamp=timezone.now()
-        )
-        logger.info(f"Simulated {num_tickets} prediction entry for outcome '{score_outcome.score}' (Match ID: {match_id}). TX: {simulated_tx_hash}")
+            RealBetTransaction.objects.create(
+                transaction_hash=mock_tx_hash,
+                bch_address=mock_bch_address,
+                amount_satoshi=mock_amount_satoshi,
+                outcome=outcome,
+                timestamp=timezone.now()
+            )
+            logger.info(f"Simulated {num_tickets} tickets for outcome '{outcome.score}' (Match ID: {outcome.match.match_id}) from TX: {mock_tx_hash}.")
+            return Response({"message": "Simulated prediction successfully!", "num_tickets": num_tickets}, status=status.HTTP_200_OK)
+        else:
+            return Response({"error": "Simulated amount too low for one ticket based on current rate."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({
-            "message": "Prediction simulated successfully!",
-            "match_id": match_id,
-            "score_outcome_id": score_outcome_id,
-            "simulated_tx_hash": simulated_tx_hash,
-            "num_tickets": num_tickets,
-            "simulated_amount_satoshi": simulated_amount_satoshi
-        }, status=status.HTTP_200_OK)
+class CSRFTokenView(APIView):
+    """
+    API endpoint to retrieve the CSRF token for frontend AJAX requests.
+    """
+    def get(self, request):
+        token = get_token(request)
+        return Response({'csrfToken': token})
 
