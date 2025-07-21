@@ -3,6 +3,7 @@ import os
 import logging
 from decimal import Decimal
 from django.utils import timezone
+from datetime import datetime, timezone as dt_timezone # ✅ Import timezone from datetime
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,6 @@ def _make_blockchair_request(endpoint, method='GET', params=None, data=None):
         "Content-Type": "application/json",
     }
     
-    # Blockchair API key is typically passed as a query parameter
     if params is None:
         params = {}
     
@@ -51,49 +51,19 @@ def _make_blockchair_request(endpoint, method='GET', params=None, data=None):
 
 def get_address_transactions_blockchair(bch_address):
     """
-    Fetches transactions for a given BCH address from Blockchair.
-    Returns a list of transaction dictionaries.
+    Fetches transaction hashes for a given BCH address from Blockchair.
+    Returns a list of transaction hash strings.
     """
     endpoint = f"dashboards/address/{bch_address}"
-    # Blockchair's address dashboard includes a 'transactions' array
-    # We might need to adjust parameters if we need more than default transactions (e.g., limit, offset)
     params = {
-        'limit': 100, # Fetch up to 100 recent transactions
+        'limit': 100,
         'offset': 0
     }
     response_data = _make_blockchair_request(endpoint, params=params)
 
     if response_data and 'data' in response_data and bch_address in response_data['data']:
         address_data = response_data['data'][bch_address]
-        # Blockchair's address dashboard has 'transactions' and 'utxo'
-        # We need to look at 'transactions' which lists transaction hashes.
-        # Then, we might need to fetch individual transaction details if the dashboard doesn't provide enough.
-        # For simplicity, let's assume the dashboard gives us enough info for incoming.
-        
-        # Blockchair's address dashboard provides 'transactions' as a list of transaction hashes.
-        # To get details (like outputs and inputs), we usually need to query individual transactions.
-        # For now, let's simplify and assume we can get enough from the dashboard or will fetch tx details
-        # in the processing step if needed.
-        
-        # A more robust approach would be to fetch individual transaction details for each hash
-        # or use a different Blockchair endpoint that provides more comprehensive transaction data directly.
-        # For now, let's use the 'transactions' list from the dashboard.
-        
-        # Let's refine this: Blockchair's 'dashboards/address/{address}' returns
-        # a 'transactions' object where keys are tx_hashes and values are summary.
-        # We need to iterate through these and then potentially fetch full tx details.
-        
-        # Alternative: Use /dashboards/transactions endpoint with an address filter if available
-        # or iterate and fetch each transaction.
-        
-        # For simplicity in this initial integration, let's use the transaction hashes
-        # and then fetch full details for each if necessary.
-        
-        # Blockchair's address dashboard provides a list of `transaction` objects under `data[address]['transactions']`
-        # which include `balance_change`, `time`, `block_id`, `hash`.
-        # To get outputs and inputs, we need `/dashboards/transaction/{hash}`.
-        
-        # Let's modify `process_new_transactions_blockchair` to fetch individual transaction details.
+        # The 'transactions' key contains a list of transaction hash STRINGS
         return address_data.get('transactions', [])
     return None
 
@@ -112,8 +82,6 @@ def process_new_transactions_blockchair(outcome):
     """
     Checks for new incoming transactions on a ScoreOutcome's BCH address
     using the Blockchair API and updates the outcome's bet_count.
-    It also records each processed transaction in the RealBetTransaction model
-    to prevent double-counting.
     """
     from api.models import RealBetTransaction, ScoreOutcome # Import here to avoid circular dependency
     from channels.layers import get_channel_layer
@@ -124,19 +92,16 @@ def process_new_transactions_blockchair(outcome):
     logger.info(f"Checking for new transactions on address: {outcome.bch_address} for outcome ID: {outcome.outcome_id} using Blockchair.")
 
     # Get recent transaction hashes for the address
-    address_transactions_summary = get_address_transactions_blockchair(outcome.bch_address)
+    transaction_hashes = get_address_transactions_blockchair(outcome.bch_address)
 
-    if not address_transactions_summary:
+    if not transaction_hashes:
         logger.info(f"No new transactions found or could not fetch summary for address: {outcome.bch_address} from Blockchair.")
         return
 
     new_tx_found_for_outcome = False
-    newest_tx_hash_seen = outcome.last_monitored_tx_hash # Initialize with current last_monitored_tx_hash
+    newest_tx_hash_seen = outcome.last_monitored_tx_hash
 
-    # Blockchair's address transactions are often ordered newest first.
-    # We iterate through them, fetching full details as needed.
-    for tx_summary in address_transactions_summary:
-        tx_hash = tx_summary.get('hash')
+    for tx_hash in transaction_hashes:
         
         if tx_hash == outcome.last_monitored_tx_hash:
             logger.info(f"Reached last processed transaction ({tx_hash}) for address {outcome.bch_address}. Stopping Blockchair scan.")
@@ -146,38 +111,32 @@ def process_new_transactions_blockchair(outcome):
             logger.info(f"Transaction {tx_hash} already recorded in RealBetTransaction for address {outcome.bch_address}. Skipping.")
             continue
 
-        # Fetch full transaction details to get outputs (and inputs for RBF/fee checks later)
         full_tx_details = get_transaction_details_blockchair(tx_hash)
 
         if not full_tx_details:
             logger.warning(f"Could not fetch full details for transaction {tx_hash}. Skipping.")
             continue
 
-        # Extract relevant data from full_tx_details
-        # Blockchair's transaction details are under 'transaction' and 'inputs'/'outputs' arrays
         transaction_data = full_tx_details.get('transaction', {})
         outputs = full_tx_details.get('outputs', [])
-        inputs = full_tx_details.get('inputs', []) # For future RBF/fee checks
+        inputs = full_tx_details.get('inputs', [])
 
         amount_satoshi = 0
         output_timestamp = None
         
-        # Find the amount sent to our specific outcome address
         for output in outputs:
-            if output.get('recipient') == outcome.bch_address: # Blockchair uses 'recipient' for output address
-                amount_satoshi = output.get('value', 0) # 'value' is in satoshis
+            if output.get('recipient') == outcome.bch_address:
+                amount_satoshi = output.get('value', 0)
                 break
 
-        # Blockchair's transaction 'time' is a string, convert to datetime object
         if transaction_data.get('time'):
-            # Blockchair time format: "2024-07-12 18:00:00"
-            output_timestamp = timezone.datetime.strptime(transaction_data['time'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            # ✅ FIX: Use dt_timezone.utc from the datetime library
+            output_timestamp = datetime.strptime(transaction_data['time'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=dt_timezone.utc)
         else:
-            output_timestamp = timezone.now() # Fallback to current time
+            output_timestamp = timezone.now()
 
-        # Blockchair's `block_id` being null or 0 indicates unconfirmed
         if transaction_data.get('block_id') is None or transaction_data.get('block_id') == 0:
-            logger.info(f"Transaction {tx_hash} for {outcome.bch_address} is unconfirmed (block_id is null/0). Skipping for now.")
+            logger.info(f"Transaction {tx_hash} for {outcome.bch_address} is unconfirmed. Skipping for now.")
             continue
 
         if amount_satoshi > 0:
@@ -213,7 +172,6 @@ def process_new_transactions_blockchair(outcome):
                 new_tx_found_for_outcome = True
                 newest_tx_hash_seen = tx_hash 
 
-                # Send WebSocket update for transaction received
                 async_to_sync(channel_layer.group_send)(
                     f'match_{outcome.match.match_id}',
                     {
@@ -225,10 +183,10 @@ def process_new_transactions_blockchair(outcome):
                             'amount_satoshi': str(amount_satoshi),
                             'num_tickets': num_tickets,
                             'match_id': outcome.match.match_id,
-                            'outcome_id': outcome.outcome_id,
+                            'outcome_id': str(outcome.outcome_id),
                             'score': outcome.score,
                             'timestamp': str(output_timestamp),
-                            'explorer_url': f"https://blockchair.com/bitcoin-cash/transaction/{tx_hash}" # Blockchair explorer link
+                            'explorer_url': f"https://blockchair.com/bitcoin-cash/transaction/{tx_hash}"
                         }
                     }
                 )
@@ -242,4 +200,3 @@ def process_new_transactions_blockchair(outcome):
         outcome.last_monitored_tx_hash = newest_tx_hash_seen
         outcome.save()
         logger.info(f"Updated last_monitored_tx_hash for {outcome.bch_address} to {outcome.last_monitored_tx_hash}.")
-

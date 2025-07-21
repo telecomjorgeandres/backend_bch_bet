@@ -24,15 +24,16 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages', # Essential for Django's messaging framework
     'django.contrib.staticfiles', # Essential for serving static files like DRF's CSS
-    'rest_framework',             # Django REST Framework
-    'corsheaders',                # Django CORS Headers
-    'api',                        # Your API app (assuming this is where your views/models are)
-    'background_task',            # Background task processing
-    'channels',                   # Django Channels
+    'rest_framework',           # Django REST Framework
+    'corsheaders',              # Django CORS Headers
+    'api',                      # Your API app (assuming this is where your views/models are)
+    'background_task',          # Background task processing
+    'channels',                 # Django Channels
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', # ✅ ADD THIS LINE
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware', # CORS middleware
     'django.middleware.common.CommonMiddleware',
